@@ -296,12 +296,20 @@ void loop() {
         Serial.print("Satellites reported: ");
         if (gps.satellites.isValid()) {
             Serial.println(gps.satellites.value());
-        } else {
+        } 
+        else {
             Serial.println("Not available");
         }
 
         Serial.print("Location valid: ");
         Serial.println(gps.location.isValid() ? "YES" : "NO");
+        if (gps.location.isValid()) {
+        Serial.print("Latitude: ");
+        Serial.println(gps.location.lat(), 6);
+
+        Serial.print("Longitude: ");
+        Serial.println(gps.location.lng(), 6);
+        }
 
         Serial.print("HDOP: ");
         if (gps.hdop.isValid()) {
