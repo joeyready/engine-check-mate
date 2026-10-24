@@ -1,0 +1,222 @@
+
+#include <Arduino.h>
+#include <TinyGPSPlus.h>
+
+// GPS hardware
+HardwareSerial gpsSerial(2);
+TinyGPSPlus gps;
+
+// Main system states
+enum SystemState {
+    STATE_STARTUP,
+    STATE_NORMAL,
+    STATE_FAULT
+};
+
+// GPS subsystem states
+enum GPSState {
+    GPS_WAITING,
+    GPS_OK,
+    GPS_DEGRADED,
+    GPS_LOST
+};
+
+// Fault codes
+enum FaultCode {
+    FAULT_NONE,
+    FAULT_TEST,
+    FAULT_GPS_LOST,
+    FAULT_SENSOR_TIMEOUT,
+    FAULT_CAN_COMMUNICATION
+};
+
+// Current states
+SystemState systemState = STATE_STARTUP;
+GPSState gpsState = GPS_WAITING;
+FaultCode activeFault = FAULT_NONE;
+
+// Hardware configuration
+const int FAULT_LED_PIN = 2;
+
+// Timing configuration
+const unsigned long STARTUP_TIME = 1000;
+const unsigned long GPS_TIMEOUT = 3000;
+const unsigned long LED_INTERVAL = 1500;
+const unsigned long STATUS_INTERVAL = 2000;
+
+// GPS quality thresholds
+const int MIN_SATELLITES = 4;
+const double MAX_HDOP = 2.5;
+
+// Runtime tracking
+unsigned long startupTime;
+unsigned long lastLedToggle = 0;
+unsigned long lastStatusPrint = 0;
+
+bool ledState = false;
+bool everHadFix = false;
+bool faultLogged = false;
+
+// Check GPS health
+GPSState checkGPSHealth() {
+    bool freshFix =
+        gps.location.isValid() &&
+        gps.location.age() <= GPS_TIMEOUT;
+
+    if (!freshFix) {
+        return everHadFix ? GPS_LOST : GPS_WAITING;
+    }
+
+    everHadFix = true;
+
+    bool enoughSatellites =
+        gps.satellites.isValid() &&
+        gps.satellites.age() <= GPS_TIMEOUT &&
+        gps.satellites.value() >= MIN_SATELLITES;
+
+    bool acceptableHDOP =
+        gps.hdop.isValid() &&
+        gps.hdop.age() <= GPS_TIMEOUT &&
+        gps.hdop.hdop() <= MAX_HDOP;
+
+    if (enoughSatellites && acceptableHDOP) {
+        return GPS_OK;
+    }
+
+    return GPS_DEGRADED;
+}
+
+// State names for Serial output
+const char* systemStateName(SystemState state) {
+    switch (state) {
+        case STATE_STARTUP: return "STARTUP";
+        case STATE_NORMAL:  return "NORMAL";
+        case STATE_FAULT:   return "FAULT";
+        default:            return "UNKNOWN";
+    }
+}
+
+const char* gpsStateName(GPSState state) {
+    switch (state) {
+        case GPS_WAITING:  return "WAITING";
+        case GPS_OK:       return "OK";
+        case GPS_DEGRADED: return "DEGRADED";
+        case GPS_LOST:     return "LOST";
+        default:           return "UNKNOWN";
+    }
+}
+
+const char* faultCodeName(FaultCode code) {
+    switch (code) {
+        case FAULT_NONE:              return "NONE";
+        case FAULT_TEST:              return "TEST";
+        case FAULT_GPS_LOST:           return "GPS_LOST";
+        case FAULT_SENSOR_TIMEOUT:    return "SENSOR_TIMEOUT";
+        case FAULT_CAN_COMMUNICATION: return "CAN_COMMUNICATION";
+        default:                      return "UNKNOWN";
+    }
+}
+
+// Register a system fault
+void triggerFault(FaultCode code) {
+    if (systemState != STATE_FAULT) {
+        systemState = STATE_FAULT;
+        activeFault = code;
+        faultLogged = false;
+    }
+}
+
+void setup() {
+    pinMode(FAULT_LED_PIN, OUTPUT);
+    digitalWrite(FAULT_LED_PIN, LOW);
+
+    Serial.begin(115200);
+    gpsSerial.begin(9600, SERIAL_8N1, 15, 17);
+
+    startupTime = millis();
+
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("     ENGINE-CHECK-MATE");
+    Serial.println("==============================");
+    Serial.println("[SYSTEM] Starting up...");
+}
+
+void loop() {
+    // Read GPS data continuously
+    while (gpsSerial.available()) {
+        gps.encode(gpsSerial.read());
+    }
+
+    unsigned long now = millis();
+
+    // Update GPS health independently
+    gpsState = checkGPSHealth();
+
+    // Main system state machine
+    switch (systemState) {
+        case STATE_STARTUP:
+            if (now - startupTime >= STARTUP_TIME) {
+                systemState = STATE_NORMAL;
+                Serial.println("[SYSTEM] STARTUP -> NORMAL");
+            }
+            break;
+
+        case STATE_NORMAL:
+            // No automatic test fault.
+            // Real fault conditions will be added here.
+            break;
+
+        case STATE_FAULT:
+            if (!faultLogged) {
+                Serial.println("[SYSTEM] Entered FAULT state");
+
+                Serial.print("[FAULT] Code: ");
+                Serial.println(faultCodeName(activeFault));
+
+                faultLogged = true;
+            }
+            break;
+    }
+
+    // Blink onboard LED when a system fault is active
+    if (systemState == STATE_FAULT) {
+        if (now - lastLedToggle >= LED_INTERVAL) {
+            lastLedToggle = now;
+            ledState = !ledState;
+            digitalWrite(FAULT_LED_PIN, ledState);
+        }
+    } else {
+        ledState = false;
+        digitalWrite(FAULT_LED_PIN, LOW);
+    }
+
+    // Print status every two seconds
+    if (now - lastStatusPrint >= STATUS_INTERVAL) {
+        lastStatusPrint = now;
+
+        Serial.print("[SYSTEM] State: ");
+        Serial.println(systemStateName(systemState));
+
+        Serial.print("[GPS] State: ");
+        Serial.println(gpsStateName(gpsState));
+
+        Serial.print("[FAULT] Active code: ");
+        Serial.println(faultCodeName(activeFault));
+
+        if (gps.location.isValid() &&
+            gps.location.age() <= GPS_TIMEOUT) {
+            Serial.print("Latitude:  ");
+            Serial.println(gps.location.lat(), 6);
+
+            Serial.print("Longitude: ");
+            Serial.println(gps.location.lng(), 6);
+
+            Serial.print("Satellites: ");
+            Serial.println(gps.satellites.value());
+
+            Serial.print("HDOP: ");
+            Serial.println(gps.hdop.hdop(), 2);
+        }
+    }
+}
